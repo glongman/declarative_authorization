@@ -5,7 +5,7 @@ require "set"
 
 module Authorization
   # An exception raised if anything goes wrong in the Authorization realm
-  class AuthorizationError < RuntimeError ; end
+  class AuthorizationError < Exception ; end
   # NotAuthorized is raised if the current user is not allowed to perform
   # the given operation possibly on a specific object.
   class NotAuthorized < AuthorizationError ; end
