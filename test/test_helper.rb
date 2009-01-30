@@ -18,6 +18,11 @@ unless defined?(ActiveRecord)
   %w(action_pack action_controller active_record active_support).each {|f| require f}
 end
 
+begin
+  require 'ruby-debug'
+rescue MissingSourceFile; end
+
+
 class MockDataObject
   def initialize (attrs = {})
     attrs.each do |key, value|
@@ -26,6 +31,10 @@ class MockDataObject
         attr_reader key
       end
     end
+  end
+  
+  def descends_from_active_record?
+    true
   end
   
   def self.table_name
@@ -45,12 +54,13 @@ class MocksController < ActionController::Base
   attr_writer :authorization_engine
   
   def authorized?
-    !@before_filter_chain_aborted
+    !!@authorized
   end
   
   def self.define_action_methods (*methods)
     methods.each do |method|
       define_method method do
+        @authorized = true
         render :text => 'nothing'
       end
     end
@@ -80,7 +90,7 @@ class Test::Unit::TestCase
     @controller.current_user = user
     @controller.authorization_engine = Authorization::Engine.new(reader)
     
-    (params.delete(:clear) || []).each do |var|
+    ((params.delete(:clear) || []) + [:@authorized]).each do |var|
       @controller.instance_variable_set(var, nil)
     end
     get action, params
