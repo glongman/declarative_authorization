@@ -16,6 +16,9 @@ module Authorization
   # in which the application misused the plugin.  That is, if, e.g.,
   # authorization rules may not be evaluated.
   class AuthorizationUsageError < AuthorizationError ; end
+  # NilAttributeValueError is raised by Attribute#validate? when it hits a nil attribute value.
+  # The exception is raised to ensure that the entire rule is invalidated.
+  class NilAttributeValueError < AuthorizationError; end
   
   AUTH_DSL_FILE = "#{RAILS_ROOT}/config/authorization_rules.rb"
   
@@ -35,13 +38,18 @@ module Authorization
   def self.ignore_access_control (state = nil) # :nodoc:
     false
   end
+
+  def self.activate_authorization_rules_browser? # :nodoc:
+    ::RAILS_ENV == 'development'
+  end
   
   # Authorization::Engine implements the reference monitor.  It may be used
   # for querying the permission and retrieving obligations under which
   # a certain privilege is granted for the current user.
   #
   class Engine
-    attr_reader :roles, :role_titles, :role_descriptions
+    attr_reader :roles, :role_titles, :role_descriptions, :privileges,
+      :privilege_hierarchy, :auth_rules, :role_hierarchy, :rev_priv_hierarchy
     
     # If +reader+ is not given, a new one is created with the default
     # authorization configuration of +AUTH_DSL_FILE+.  If given, may be either
@@ -103,6 +111,23 @@ module Authorization
         :skip_attribute_test => false,
         :context => nil
       }.merge(options)
+      
+      # Make sure we're handling all privileges as symbols.
+      privilege = privilege.is_a?( Array ) ?
+                  privilege.flatten.collect { |priv| priv.to_sym } :
+                  privilege.to_sym
+      
+      #
+      # If the object responds to :new, we're probably working with an association collection.  Use
+      # 'new' to leverage ActiveRecord's builder functionality to obtain an object against which we
+      # can check permissions.
+      #
+      # Example: permit!( :edit, user.posts )
+      #
+      if options[:object].respond_to?( :new )
+        options[:object] = options[:object].new
+      end
+      
       options[:context] ||= options[:object] && options[:object].class.table_name.to_sym rescue NoMethodError
       
       user, roles, privileges = user_roles_privleges_from_options(privilege, options)
@@ -110,13 +135,6 @@ module Authorization
       # find a authorization rule that matches for at least one of the roles and 
       # at least one of the given privileges
       attr_validator = AttributeValidator.new(self, user, options[:object])
-      #puts "All rules: #{@auth_rules.inspect}"
-      #rules_matching_roles = @auth_rules.select {|r| roles.include?(r.role) }
-      #puts "Matching for roles: #{rules_matching_roles.inspect}"
-      #puts "Matching rules for user   #{user.inspect},"
-      #puts "                   roles  #{roles.inspect},"
-      #puts "                   privs  #{privileges.inspect}:"
-      #puts "   #{matching_auth_rules(roles, privileges).inspect}"
       rules = matching_auth_rules(roles, privileges, options[:context])
       if rules.empty?
         raise NotAuthorized, "No matching rules found for #{privilege} for #{user.inspect} " +
@@ -124,10 +142,19 @@ module Authorization
           "context #{options[:context].inspect})."
       end
       
+      # Test each rule in turn to see whether any one of them is satisfied.
       grant_permission = rules.any? do |rule|
-        options[:skip_attribute_test] or
-          rule.attributes.empty? or
-          rule.attributes.any? {|attr| attr.validate? attr_validator }
+        begin
+          options[:skip_attribute_test] or
+            rule.attributes.empty? or
+            rule.attributes.any? do |attr|
+              begin
+                attr.validate?( attr_validator )
+              rescue NilAttributeValueError => e
+                nil # Bumping up against a nil attribute value flunks the rule.
+              end
+            end
+        end
       end
       unless grant_permission
         raise AttributeAuthorizationError, "#{privilege} not allowed for #{user.inspect} on #{options[:object].inspect}."
@@ -185,6 +212,23 @@ module Authorization
     def title_for (role)
       role_titles[role]
     end
+
+    # Returns the role symbols of the given user.
+    def roles_for (user)
+      raise AuthorizationUsageError, "User object doesn't respond to roles" \
+        if !user.respond_to?(:role_symbols) and !user.respond_to?(:roles)
+
+      RAILS_DEFAULT_LOGGER.info("The use of user.roles is deprecated.  Please add a method " +
+          "role_symbols to your User model.") if defined?(RAILS_DEFAULT_LOGGER) and !user.respond_to?(:role_symbols)
+
+      roles = user.respond_to?(:role_symbols) ? user.role_symbols : user.roles
+
+      raise AuthorizationUsageError, "User.#{user.respond_to?(:role_symbols) ? 'role_symbols' : 'roles'} " +
+        "doesn't return an Array of Symbols (#{roles.inspect})" \
+            if !roles.is_a?(Array) or (!roles.empty? and !roles[0].is_a?(Symbol))
+
+      (roles.empty? ? [:guest] : roles)
+    end
     
     # Returns an instance of Engine, which is created if there isn't one
     # yet.  If +dsl_file+ is given, it is passed on to Engine.new and 
@@ -220,14 +264,10 @@ module Authorization
       user = options[:user] || Authorization.current_user
       privileges = privilege.is_a?(Array) ? privilege : [privilege]
       
-      raise AuthorizationUsageError, "No user object available (#{user.inspect})" \
+      raise AuthorizationUsageError, "No user object given (#{user.inspect})" \
         unless user
-      raise AuthorizationUsageError, "User object doesn't respond to roles" \
-        unless user.respond_to?(:roles)
-      raise AuthorizationUsageError, "User.roles doesn't return an Array of Symbols" \
-        unless user.roles.empty? or user.roles[0].is_a?(Symbol)
-      
-      roles = flatten_roles((user.roles.blank? ? [:guest] : user.roles))
+
+      roles = flatten_roles(roles_for(user))
       privileges = flatten_privileges privileges, options[:context]
       [user, roles, privileges]
     end
@@ -311,7 +351,7 @@ module Authorization
               "on a collection.  Cannot use '=>' operator on #{attr.inspect} " +
               "(#{attr_value.inspect}) for attributes #{value.inspect}."
           elsif attr_value.nil?
-            raise AuthorizationError, "Attribute #{attr.inspect} is nil in #{object.inspect}."
+            raise NilAttributeValueError, "Attribute #{attr.inspect} is nil in #{object.inspect}."
           end
           validate?(attr_validator, attr_value, value)
         elsif value.is_a?(Array) and value.length == 2
@@ -323,10 +363,16 @@ module Authorization
           case value[0]
           when :is
             attr_value == evaluated
+          when :is_not
+            attr_value != evaluated
           when :contains
             attr_value.include?(evaluated)
+          when :does_not_contain
+            !attr_value.include?(evaluated)
           when :is_in
             evaluated.include?(attr_value)
+          when :is_not_in
+            !evaluated.include?(attr_value)
           else
             raise AuthorizationError, "Unknown operator #{value[0]}"
           end
@@ -437,9 +483,9 @@ module Authorization
   
   # Represents a pseudo-user to facilitate guest users in applications
   class GuestUser
-    attr_reader :roles
+    attr_reader :role_symbols
     def initialize (roles = [:guest])
-      @roles = roles
+      @role_symbols = roles
     end
   end
 end

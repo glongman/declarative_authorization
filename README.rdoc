@@ -31,7 +31,7 @@ Plugin features
 Requirements
 * An authentication mechanism 
   * User object in Controller#current_user
-* User object needs to respond to a method :roles, which should return an 
+* User object needs to respond to a method :role_symbols that returns an 
   array of role symbols
 See below for installation instructions.
 
@@ -70,6 +70,9 @@ current user's branch."
 
 = Examples
 
+A fully functional example application can be found at
+http://github.com/stffn/decl_auth_demo_app
+
 == Controller
 
 If authentication is in place, enabling user-specific access control may be
@@ -79,7 +82,7 @@ required for action index.  This works as a first default configuration
 for RESTful controllers, with these privileges easily handled in the
 authorization configuration, which will be described below.
 
-    class EmployeeController < ApplicationController
+    class EmployeesController < ApplicationController
       filter_access_to :all
       def index
         ...
@@ -91,7 +94,7 @@ When custom actions are added to such a controller, it helps to define more
 clearly which privileges are the respective requirements.  That is when the
 filter_access_to call may become more verbose:
 
-    class EmployeeController < ApplicationController
+    class EmployeesController < ApplicationController
       filter_access_to :all
       # this one would be included in :all, but :read seems to be
       # a more suitable privilege than :auto_complete_for_user_name
@@ -109,19 +112,34 @@ might prefer the authorization to ignore specific attribute checks as the object
 unknown at checking time, so attribute checks and thus automatic loading of
 objects needs to be enabled explicitly.
 
-    class EmployeeController < ApplicationController
-      ...
+    class EmployeesController < ApplicationController
       filter_access_to :update, :attribute_check => true
       def update
-        # @employee is already loaded from param[:id]
-        @employee ||= Employee.find(param[:id])
-        ...
+        # @employee is already loaded from param[:id] because of :attribute_check
       end
-      ...
+    end
+
+You can provide the needed object through before_filters.  This way, you have
+full control over the object that the conditions are checked against.  Just make
+sure, your before_filters occur before any of the filter_access_to calls.
+
+    class EmployeesController < ApplicationController
+      before_filter :new_employee_from_params, :only => :create
+      before_filter :new_employee, :only => [:index, :new]
+      filter_access_to :all, :attribute_check => true
+
+      def create
+        @employee.save!
+      end
+
+      protected
+      def new_employee_from_params
+        @employee = Employee.new(params[:employee])
+      end
     end
 
 If the access is denied, a +permission_denied+ method is called on the
-current_controller, if defined and the issue is logged.
+current_controller, if defined, and the issue is logged.
 For further customization of the filters and object loading, have a look at 
 the complete API documentation of filter_access_to in 
 Authorization::AuthorizationInController::ClassMethods.
@@ -132,13 +150,24 @@ Authorization::AuthorizationInController::ClassMethods.
 In views, a simple permitted_to? helper makes showing blocks according to the
 current user's privileges easy:
 
-    <% permitted_to?(:create, :employees) do %>
+    <% permitted_to? :create, :employees do %>
     <%= link_to 'New', new_employee_path %>
     <% end %>
-    ...
+
+Only giving a symbol :employees as context prevents any checks of attributes
+as there is no object to check against.  For example, in case of nested resources
+a new object may come in handy:
+
+    <% permitted_to? :create, Branch.new(:company => @company) do
+            # or @company.branches.new
+            # or even @company.branches %>
+    <%= link_to 'New', new_company_branch_path(@company) %>
+    <% end %>
+
+Lists are straight-forward:
+
     <% for employee in @employees %>
-    ...
-    <%= link_to 'Edit', edit_employee_path(company) if permitted_to?(:update, employee) %>
+    <%= link_to 'Edit', edit_employee_path(employee) if permitted_to? :update, employee %>
     <% end %>
 
 See also Authorization::AuthorizationHelper.
@@ -231,7 +260,8 @@ Privilege hierarchies may be context-specific, e.g. applicable to :employees.
     end
 
 For more complex use cases, authorizations need to be based on attributes.  E.g.
-if a branch admin should manage only employees of his branch:
+if a branch admin should manage only employees of his branch (see 
+Authorization::Reader in the API docs for a full list of available operators):
 
     authorization do
       role :branch_admin do
@@ -269,6 +299,45 @@ Here, project manager inherit the permissions of employees.
 
 See also Authorization::Reader.
 
+== Testing
+
+declarative_authorization provides a few helpers to ease the testing with
+authorization in mind.
+
+In your test_helper.rb, to enable the helpers add
+
+    require File.expand_path(File.dirname(__FILE__) +
+        "/../vendor/plugins/declarative_authorization/lib/maintenance")
+
+    class Test::Unit::TestCase
+      include Authorization::TestHelper
+      ...
+    end
+
+Now, in unit tests, you may deactivate authorization if needed e.g. for test
+setup and assume certain identities for tests:
+
+    class EmployeeTest < ActiveSupport::TestCase
+      def test_should_read
+        without_access_control do
+          Employee.create(...)
+        end
+        assert_nothing_raised do
+          with_user(admin) do
+            Employee.find(:first)
+          end
+        end
+      end
+    end
+
+In functional tests, get, posts, etc. may be tested in the name of certain users:
+
+    get_with admin, :index
+    post_with admin, :update, :employee => {...}
+
+See Authorization::TestHelper for more information.
+
+
 = Installation of declarative_authorization
 
 To install simply execute in your applications root directory
@@ -286,20 +355,18 @@ The requirements are
 * Rails >= 2.1 and Ruby >= 1.8.6, including 1.9
 * An authentication mechanism 
 * A user object returned by controller.current_user
-* An array of role symbols returned by user.roles
+* An array of role symbols returned by user.role_symbols
 
 Of the various ways to provide these requirements, here is one way employing
 restful_authentication.
 
 * Install restful_authentication
    cd vendor/plugins && git clone git://github.com/technoweenie/restful-authentication.git restful_authentication
-   ruby script/generate authenticated user sessions
+   cd ../.. && ruby script/generate authenticated user sessions
 * Move "include AuthenticatedSystem" to ApplicationController
-* Add +before_filter+ :+login_required+ to controllers where a user should be
-  forced to log in;  if parts of your application are public, 
-  +filter_access_to+ calls as described above are sufficient.
+* Add +filter_access_to+ calls as described above.
 * If you'd like to use model security, add a before_filter that sets the user 
-  globally to your ApplicationController.  Note, this is by no means thread-safe.
+  globally to your ApplicationController.  This is thread-safe.
    before_filter :set_current_user
    protected
    def set_current_user
@@ -331,18 +398,19 @@ restful_authentication.
   * add +has_many+ :+roles+ to the User model and a roles method that returns the roles 
     as an Array of Symbols, e.g.
      class User < ActiveRecord::Base
-       has_many :role_objs, :class_name => 'Role'
-       def roles
-         (role_objs || []).map {|r| r.title.to_sym}
+       has_many :roles
+       def role_symbols
+         (roles || []).map {|r| r.title.to_sym}
        end
      end
 
   * add roles to your User objects using e.g.
-     user.role_objs.create(:title => "admin")
+     user.roles.create(:title => "admin")
 
 Note:  If you choose to generate an Account model for restful_authentication
 instead of a User model as described below, you have to customize the
 examples and create a ApplicationController#current_user method.
+
 
 == Debugging Authorization
 
@@ -354,7 +422,27 @@ All bang methods throw exceptions which may be used to retrieve more
 information about a denied access than a Boolean value.
 
 
-== Help and Contact
+== Authorization Browser
+
+If your authorization rules become more complex, you might be glad to use
+the authorization rules browser that comes with declarative_authorization.
+It has a syntax-highlighted and a graphical view with filtering of the current
+authorization rules.
+
+By default, it will only be available in development mode.  To use it, add
+the following lines to your authorization_rules.rb for the appropriate role:
+
+  has_permission_on :authorization_rules, :to => :read
+
+Then, point your browser to
+  http://localhost/authorization_rules
+
+The browser needs Rails 2.3 (for Engine support).  The graphical view requires 
+Graphviz (which e.g. can be installed through the graphviz package under Debian 
+and Ubuntu) and is only tested under Linux.
+
+
+= Help and Contact
 
 We have an issue tracker[http://stffn.lighthouseapp.com/projects/20733-declarative_authorization] 
 for bugs and feature requests as well as a 
@@ -370,7 +458,7 @@ TZI, Universität Bremen, Germany
 sbartsch at tzi.org
 
 
-== Contributors
+= Contributors
 
 Thanks to
 * Brian Langenfeld
@@ -378,7 +466,7 @@ Thanks to
 * Mike Vincent
 
 
-== Licence
+= Licence
 
 Copyright (c) 2008 Steffen Bartsch, TZI, Universität Bremen, Germany
 released under the MIT license
