@@ -432,9 +432,11 @@ module Authorization
   class AttributeWithPermission < Attribute
     # E.g. privilege :read, attr_or_hash either :attribute or
     # { :attribute => :deeper_attribute }
-    def initialize (privilege, attr_or_hash, context = nil)
+    def initialize (privilege, attr_or_hash, options={})
       @privilege = privilege
-      @context = context
+      @context = options[:context]
+      @deny_on_nil = options[:deny_on_nil]
+      @deny_on_nil = [@deny_on_nil].flatten
       @attr_hash = attr_or_hash
     end
 
@@ -446,12 +448,17 @@ module Authorization
       case hash_or_attr
       when Symbol
         attr_value = object_attribute_value(object, hash_or_attr)
+        return false if attr_value.nil? && @deny_on_nil.include?(hash_or_attr)
         attr_validator.engine.permit? @privilege, :object => attr_value, :user => attr_validator.user
       when Hash
         hash_or_attr.all? do |attr, sub_hash|
           attr_value = object_attribute_value(object, attr)
           if attr_value.nil?
-            raise AuthorizationError, "Attribute #{attr.inspect} is nil in #{object.inspect}."
+            if @deny_on_nil.include?(attr)
+              return false
+            else
+              raise AuthorizationError, "Attribute #{attr.inspect} is nil in #{object.inspect}."
+            end
           end
           validate?(attr_validator, attr_value, sub_hash)
         end

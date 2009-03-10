@@ -515,6 +515,74 @@ class AuthorizationTest < Test::Unit::TestCase
                 MockDataObject.new(:permission => perm_data_attr_2)))
   end
   
+  def test_attribute_with_deep_permissions_allowed_nil
+    reader = Authorization::Reader::DSLReader.new
+    reader.parse %{
+      authorization do
+        role :test_role do
+          has_permission_on :permissions, :to => :test do
+            if_attribute :test_attr => 1
+          end
+          has_permission_on :permission_children, :to => :test do
+            if_permitted_to :test, :shallow_permission => :permission, :deny_on_nil => :shallow_permission
+          end
+        end
+      end
+    }
+    engine = Authorization::Engine.new(reader)
+    assert_nothing_raised do
+      assert !engine.permit?(:test, :context => :permission_children,
+                :user => MockUser.new(:test_role),
+                :object => MockDataObject.new(:shallow_permission => nil))
+    end
+  end
+
+  def test_attribute_with_deep_permissions_allowed_nil_last_in_chain
+    reader = Authorization::Reader::DSLReader.new
+    reader.parse %{
+      authorization do
+        role :test_role do
+          has_permission_on :permissions, :to => :test do
+            if_attribute :test_attr => 1
+          end
+          has_permission_on :permission_children, :to => :test do
+            if_permitted_to :test, :shallow_permission => :permission, :deny_on_nil => :permission
+          end
+        end
+      end
+    }
+    engine = Authorization::Engine.new(reader)
+    assert_nothing_raised do
+      assert !engine.permit?(:test, :context => :permission_children,
+                :user => MockUser.new(:test_role),
+                :object => MockDataObject.new(:shallow_permission =>
+                  MockDataObject.new(:permission => nil)))
+    end
+  end
+  
+  def test_attribute_with_deep_permissions_not_allowed_nil
+    reader = Authorization::Reader::DSLReader.new
+    reader.parse %{
+      authorization do
+        role :test_role do
+          has_permission_on :permissions, :to => :test do
+            if_attribute :test_attr => 1
+          end
+          has_permission_on :permission_children, :to => :test do
+            if_permitted_to :test, :shallow_permission => :permission
+          end
+        end
+      end
+    }
+    engine = Authorization::Engine.new(reader)
+    why = assert_raises Authorization::AuthorizationUsageError do
+      engine.permit?(:test, :context => :permission_children,
+              :user => MockUser.new(:test_role),
+              :object => MockDataObject.new(:shallow_permission =>
+                MockDataObject.new(:permission => nil)))
+    end
+    assert_match /No context given or inferable from object/, why.message
+  end  
   def test_raise_on_if_attribute_hash_on_collection
     reader = Authorization::Reader::DSLReader.new
     reader.parse %{
