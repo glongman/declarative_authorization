@@ -42,6 +42,15 @@ module Authorization
   def self.activate_authorization_rules_browser? # :nodoc:
     ::RAILS_ENV == 'development'
   end
+
+  @@dot_path = "dot"
+  def self.dot_path
+    @@dot_path
+  end
+
+  def self.dot_path= (path)
+    @@dot_path = path
+  end
   
   # Authorization::Engine implements the reference monitor.  It may be used
   # for querying the permission and retrieving obligations under which
@@ -192,7 +201,7 @@ module Authorization
     def obligations (privilege, options = {})
       options = {:context => nil}.merge(options)
       user, roles, privileges = user_roles_privleges_from_options(privilege, options)
-      attr_validator = AttributeValidator.new(self, user)
+      attr_validator = AttributeValidator.new(self, user, nil, options[:context])
       matching_auth_rules(roles, privileges, options[:context]).collect do |rule|
         obligation = rule.attributes.collect {|attr| attr.obligation(attr_validator) }
         obligation.empty? ? [{}] : obligation
@@ -230,6 +239,11 @@ module Authorization
       (roles.empty? ? [:guest] : roles)
     end
     
+    # Returns the role symbols and inherritted role symbols for the given user
+    def roles_with_hierarchy_for(user)
+      flatten_roles(roles_for(user))
+    end
+    
     # Returns an instance of Engine, which is created if there isn't one
     # yet.  If +dsl_file+ is given, it is passed on to Engine.new and 
     # a new instance is always created.
@@ -242,11 +256,12 @@ module Authorization
     end
     
     class AttributeValidator # :nodoc:
-      attr_reader :user, :object, :engine
-      def initialize (engine, user, object = nil)
+      attr_reader :user, :object, :engine, :context
+      def initialize (engine, user, object = nil, context = nil)
         @engine = engine
         @user = user
         @object = object
+        @context = context
       end
       
       def evaluate (value_block)
@@ -501,6 +516,10 @@ module Authorization
           end.flatten
         end
         obligations
+      when NilClass
+        attr_validator.engine.obligations(@privilege,
+            :context => attr_validator.context,
+            :user    => attr_validator.user)
       else
         raise AuthorizationError, "Wrong conditions hash format: #{hash_or_attr.inspect}"
       end

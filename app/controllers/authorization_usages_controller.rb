@@ -1,6 +1,6 @@
 if Authorization::activate_authorization_rules_browser?
 
-require File.join(File.dirname(__FILE__), %w{.. .. lib maintenance})
+require File.join(File.dirname(__FILE__), %w{.. .. lib declarative_authorization maintenance})
 
 class AuthorizationUsagesController < ApplicationController
   helper :authorization_rules
@@ -16,4 +16,6 @@ class AuthorizationUsagesController < ApplicationController
   end
 end
 
+else
+class AuthorizationUsagesController < ApplicationController; end
 end # activate_authorization_rules_browser?

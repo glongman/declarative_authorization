@@ -208,9 +208,6 @@ module Authorization
             end
             bindvar = "#{attribute_table_alias}__#{attribute_name}_#{obligation_index}".to_sym
 
-            attribute_value = value.respond_to?( :descends_from_active_record? ) && value.descends_from_active_record? && value.id ||
-                              value.is_a?( Array ) && value[0].respond_to?( :descends_from_active_record? ) && value[0].descends_from_active_record? && value.map( &:id ) ||
-                              value
             attribute_operator = case operator
                                  when :contains, :is             then "= :#{bindvar}"
                                  when :does_not_contain, :is_not then "<> :#{bindvar}"
@@ -218,7 +215,7 @@ module Authorization
                                  when :is_not_in                 then "NOT IN (:#{bindvar})"
                                  end
             obligation_conds << "#{connection.quote_table_name(attribute_table_alias)}.#{connection.quote_table_name(attribute_name)} #{attribute_operator}"
-            binds[bindvar] = attribute_value
+            binds[bindvar] = attribute_value(value)
           end
         end
         obligation_conds << "1=1" if obligation_conds.empty?
@@ -227,13 +224,19 @@ module Authorization
       (delete_paths - used_paths).each {|path| reflections.delete(path)}
       @proxy_options[:conditions] = [ conds.join( " OR " ), binds ]
     end
+
+    def attribute_value (value)
+      value.respond_to?( :descends_from_active_record? ) && value.descends_from_active_record? && value.id ||
+        value.is_a?( Array ) && value[0].respond_to?( :descends_from_active_record? ) && value[0].descends_from_active_record? && value.map( &:id ) ||
+        value
+    end
     
     # Parses all of the defined obligation joins and defines the scope's :joins or :includes option.
     # TODO: Support non-linear association paths.  Right now, we just break down the longest path parsed.
     def rebuild_join_options!
       joins = @proxy_options[:joins] || []
 
-      reflections.keys.reverse.each do |path|
+      reflections.keys.each do |path|
         next if path.empty?
         
         existing_join = joins.find do |join|
@@ -254,9 +257,9 @@ module Authorization
       end
 
       case obligation_conditions.length
-      when 0:
+      when 0 then
         # No obligation conditions means we don't have to mess with joins or includes at all.
-      when 1:
+      when 1 then
         @proxy_options[:joins] = joins
         @proxy_options.delete( :include )
       else

@@ -1,5 +1,5 @@
 require File.join(File.dirname(__FILE__), 'test_helper.rb')
-require File.join(File.dirname(__FILE__), '..', 'lib', 'in_model.rb')
+require File.join(File.dirname(__FILE__), %w{.. lib declarative_authorization in_model})
 
 ActiveRecord::Base.send :include, Authorization::AuthorizationInModel
 #ActiveRecord::Base.logger = Logger.new(STDOUT)
@@ -24,7 +24,10 @@ class TestModel < ActiveRecord::Base
   has_one :test_attr_throughs_with_attr_and_has_one, :through => :test_attrs,
     :class_name => "TestAttrThrough", :source => :test_attr_throughs,
     :conditions => "test_attrs.attr = 1"
-  
+
+  has_and_belongs_to_many :test_attr_throughs_habtm, :join_table => :test_attrs,
+      :class_name => "TestAttrThrough"
+
   # Primary key test
   # take this out for Rails prior to 2.2
   if ([Rails::VERSION::MAJOR, Rails::VERSION::MINOR] <=> [2, 2]) > -1
@@ -212,6 +215,34 @@ class ModelTest < Test::Unit::TestCase
                         :test_attr_value_2 => test_model_2.id)
     assert_equal 2, TestModel.with_permissions_to(:read, :user => user).length
     TestModel.delete_all
+  end
+
+  def test_named_scope_multiple_roles
+    reader = Authorization::Reader::DSLReader.new
+    reader.parse %{
+      authorization do
+        role :test_role do
+          has_permission_on :test_attrs, :to => :read do
+            if_attribute :attr => [1,2]
+          end
+        end
+
+        role :test_role_2 do
+          has_permission_on :test_attrs, :to => :read do
+            if_attribute :attr => [2,3]
+          end
+        end
+      end
+    }
+    Authorization::Engine.instance(reader)
+
+    TestAttr.create! :attr => 1
+    TestAttr.create! :attr => 2
+    TestAttr.create! :attr => 3
+
+    user = MockUser.new(:test_role)
+    assert_equal 2, TestAttr.with_permissions_to(:read, :user => user).length
+    TestAttr.delete_all
   end
   
   def test_named_scope_multiple_and_empty_obligations
@@ -476,6 +507,36 @@ class ModelTest < Test::Unit::TestCase
     TestAttrThrough.delete_all
     TestAttr.delete_all
   end
+
+  def test_named_scope_with_contains_habtm
+    reader = Authorization::Reader::DSLReader.new
+    reader.parse %{
+      authorization do
+        role :test_role do
+          has_permission_on :test_models, :to => :read do
+            if_attribute :test_attr_throughs_habtm => contains { user.test_attr_through_id }
+          end
+        end
+      end
+    }
+    Authorization::Engine.instance(reader)
+
+    test_model_1 = TestModel.create!
+    test_model_2 = TestModel.create!
+    test_attr_through_1 = TestAttrThrough.create!
+    test_attr_through_2 = TestAttrThrough.create!
+    TestAttr.create! :test_model_id => test_model_1.id, :test_attr_through_id => test_attr_through_1.id
+    TestAttr.create! :test_model_id => test_model_2.id, :test_attr_through_id => test_attr_through_2.id
+
+    user = MockUser.new(:test_role,
+                        :test_attr_through_id => test_model_1.test_attr_throughs_habtm.first.id)
+    assert_equal 1, TestModel.with_permissions_to(:read, :user => user).length
+    assert_equal test_model_1, TestModel.with_permissions_to(:read, :user => user)[0]
+
+    TestModel.delete_all
+    TestAttrThrough.delete_all
+    TestAttr.delete_all
+  end
   
   # take this out for Rails prior to 2.2
   if ([Rails::VERSION::MAJOR, Rails::VERSION::MINOR] <=> [2, 2]) > -1
@@ -693,6 +754,55 @@ class ModelTest < Test::Unit::TestCase
     TestModel.delete_all
     TestAttr.delete_all
   end
+
+  def test_named_scope_with_if_permitted_to_nil
+    reader = Authorization::Reader::DSLReader.new
+    reader.parse %{
+      authorization do
+        role :test_role do
+          has_permission_on :test_models, :to => :read do
+            if_attribute :test_attrs => contains { user }
+          end
+          has_permission_on :test_attrs, :to => :read do
+            if_permitted_to :read, :test_model
+          end
+        end
+      end
+    }
+    Authorization::Engine.instance(reader)
+
+    test_attr_1 = TestAttr.create!
+
+    user = MockUser.new(:test_role, :id => test_attr_1.id)
+    assert_equal 0, TestAttr.with_permissions_to(:read, :user => user).length
+    TestAttr.delete_all
+  end
+
+  def test_named_scope_with_if_permitted_to_self
+    reader = Authorization::Reader::DSLReader.new
+    reader.parse %{
+      authorization do
+        role :test_role do
+          has_permission_on :test_models, :to => :read do
+            if_attribute :test_attrs => contains { user }
+          end
+          has_permission_on :test_models, :to => :update do
+            if_permitted_to :read
+          end
+        end
+      end
+    }
+    Authorization::Engine.instance(reader)
+
+    test_model_1 = TestModel.create!
+    test_attr_1 = test_model_1.test_attrs.create!
+    test_attr_2 = TestAttr.create!
+
+    user = MockUser.new(:test_role, :id => test_attr_1.id)
+    assert_equal 1, TestModel.with_permissions_to(:update, :user => user).length
+    TestAttr.delete_all
+    TestModel.delete_all
+  end
   
   def test_model_security
     reader = Authorization::Reader::DSLReader.new
@@ -817,5 +927,69 @@ class ModelTest < Test::Unit::TestCase
     assert !engine.permit?(:read, :object => TestAttr.new,
                           :user => MockUser.new(:test_role))
     TestModel.delete_all
+  end
+
+  def test_multiple_roles_with_has_many_through
+    reader = Authorization::Reader::DSLReader.new
+    reader.parse %{
+      authorization do
+        role :test_role_1 do
+          has_permission_on :test_models, :to => :read do
+            if_attribute :test_attr_throughs => contains {user.test_attr_through_id},
+                :content => 'test_1'
+          end
+        end
+
+        role :test_role_2 do
+          has_permission_on :test_models, :to => :read do
+            if_attribute :test_attr_throughs_2 => contains {user.test_attr_through_2_id},
+                :content => 'test_2'
+          end
+        end
+      end
+    }
+    Authorization::Engine.instance(reader)
+
+    test_model_1 = TestModel.create! :content => 'test_1'
+    test_model_2 = TestModel.create! :content => 'test_2'
+    test_model_1.test_attrs.create!.test_attr_throughs.create!
+    test_model_2.test_attrs.create!.test_attr_throughs.create!
+
+    user = MockUser.new(:test_role_1, :test_role_2,
+        :test_attr_through_id => test_model_1.test_attr_throughs.first.id,
+        :test_attr_through_2_id => test_model_2.test_attr_throughs.first.id)
+    assert_equal 2, TestModel.with_permissions_to(:read, :user => user).length
+    TestModel.delete_all
+    TestAttr.delete_all
+    TestAttrThrough.delete_all
+  end
+
+  def test_named_scope_with_has_many_and_reoccuring_tables
+    reader = Authorization::Reader::DSLReader.new
+    reader.parse %{
+      authorization do
+        role :test_role do
+          has_permission_on :test_attrs, :to => :read do
+            if_attribute :test_another_model => { :content => 'test_1_2' },
+                :test_model => { :content => 'test_1_1' }
+          end
+        end
+      end
+    }
+    Authorization::Engine.instance(reader)
+
+    test_attr_1 = TestAttr.create!(
+        :test_model => TestModel.create!(:content => 'test_1_1'),
+        :test_another_model => TestModel.create!(:content => 'test_1_2')
+      )
+    test_attr_2 = TestAttr.create!(
+        :test_model => TestModel.create!(:content => 'test_2_1'),
+        :test_another_model => TestModel.create!(:content => 'test_2_2')
+      )
+
+    user = MockUser.new(:test_role)
+    assert_equal 1, TestAttr.with_permissions_to(:read, :user => user).length
+    TestModel.delete_all
+    TestAttr.delete_all
   end
 end

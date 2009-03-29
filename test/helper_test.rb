@@ -1,6 +1,5 @@
 require File.join(File.dirname(__FILE__), 'test_helper.rb')
-require File.dirname(__FILE__) + '/../lib/in_controller.rb'
-require File.dirname(__FILE__) + '/../lib/helper.rb'
+require File.join(File.dirname(__FILE__), %w{.. lib declarative_authorization helper})
 
 
 class HelperMocksController < MocksController
@@ -92,5 +91,43 @@ class HelperTest < ActionController::TestCase
     end
     assert !block_evaled
   end
+  
+  def test_has_role_with_hierarchy
+    reader = Authorization::Reader::DSLReader.new
+    reader.parse %{
+      authorization do
+        role :test_role do
+          has_permission_on :mocks, :to => :show
+        end
+        role :other_role do
+          has_permission_on :another_mocks, :to => :show
+        end
+
+        role :root do
+          includes :test_role
+        end
+      end
+    }    
+    
+    user = MockUser.new(:root)
+    request!(user, :action, reader)
+    
+    assert has_role_with_hierarchy?(:test_role)
+    assert !has_role_with_hierarchy?(:other_role)
+
+    block_evaled = false
+    has_role_with_hierarchy?(:test_role) do
+      block_evaled = true
+    end
+    assert block_evaled
+    
+    block_evaled = false
+    has_role_with_hierarchy?(:test_role2) do
+      block_evaled = true
+    end
+    assert !block_evaled
+
+  end
+  
   
 end

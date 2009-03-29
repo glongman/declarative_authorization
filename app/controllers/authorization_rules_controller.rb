@@ -1,5 +1,7 @@
 if Authorization::activate_authorization_rules_browser?
 
+require File.join(File.dirname(__FILE__), %w{.. .. lib declarative_authorization authorization_rules_analyzer})
+
 begin
   # for nice auth_rules output:
   require "parse_tree"
@@ -81,7 +83,7 @@ class AuthorizationRulesController < ApplicationController
   end
   
   def dot_to_svg (dot_data)
-    gv = IO.popen("/usr/bin/dot -q -Tsvg", "w+")
+    gv = IO.popen("#{Authorization.dot_path} -q -Tsvg", "w+")
     gv.puts dot_data
     gv.close_write
     gv.read
@@ -100,4 +102,6 @@ class AuthorizationRulesController < ApplicationController
   end
 end
 
+else
+class AuthorizationRulesController < ApplicationController; end
 end # activate_authorization_rules_browser?

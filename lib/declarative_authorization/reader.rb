@@ -209,7 +209,8 @@ module Authorization
       # The block form allows to describe restrictions on the permissions
       # using if_attribute.  Multiple has_permission_on statements are
       # OR'ed when evaluating the permissions.  Also, multiple if_attribute
-      # statements in one block are OR'ed.
+      # statements in one block are OR'ed.  To AND conditions, place them
+      # in one if_attribute statement.
       # 
       # Available options
       # [:+to+]
@@ -292,11 +293,20 @@ module Authorization
       #     end
       #   end
       # 
-      # Multiple if_attribute statements are OR'ed.
+      # Multiple attributes in one :if_attribute statement are AND'ed.
+      # Multiple if_attribute statements are OR'ed.  Thus, the following would
+      # require the current user either to be of the same branch AND the employee
+      # to be "changeable_by_coworker".  OR the current user has to be the
+      # employee in question.
+      #   has_permission_on :employees, :to => :manage do
+      #     if_attribute :branch => is {user.branch}, :changeable_by_coworker => true
+      #     if_attribute :id => is {user.id}
+      #   end
       #
       # Arrays and fixed values may be used directly as hash values:
-      #   if_attribute :id => 1
-      #   if_attribute :id => [1,2]
+      #   if_attribute :id   => 1
+      #   if_attribute :type => "special"
+      #   if_attribute :id   => [1,2]
       #
       def if_attribute (attr_conditions_hash)
         raise DSLError, "if_attribute only in has_permission blocks" if @current_rule.nil?
@@ -321,6 +331,18 @@ module Authorization
       #
       # if_permitted_to associations may be nested as well:
       #   if_permitted_to :read, :branch => :company
+      #
+      # To check permissions based on the current object, the attribute has to
+      # be left out:
+      #   has_permission_on :branches, :to => :manage do
+      #     if_attribute :employees => includes { user }
+      #   end
+      #   has_permission_on :branches, :to => :paint_green do
+      #     if_permitted_to :update
+      #   end
+      # Normally, one would merge those rules into one.  Deviding makes sense
+      # if additional if_attribute are used in the second rule or those rules
+      # are applied to different roles.
       #
       # Options:
       # [:+context+]
@@ -390,7 +412,7 @@ module Authorization
           elsif !value.is_a?(Array)
             merge_hash[key] = [:is, lambda { value }]
           elsif value.is_a?(Array) and !value[0].is_a?(Symbol)
-            merge_hash[key] = [:is_in, value]
+            merge_hash[key] = [:is_in, lambda { value }]
           end
         end
         hash.merge!(merge_hash)
