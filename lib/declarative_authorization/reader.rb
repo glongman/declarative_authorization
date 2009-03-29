@@ -351,21 +351,15 @@ module Authorization
       #     if_permitted_to :read, :home_branch, :context => :branches
       #     if_permitted_to :read, :branch => :main_company, :context => :companies
       #
-      # [:+deny_on_nil]
-      #   The normal behavior is to throw an exception if something in the chain of
-      #   nested associations evaluates to nil. This can be overriden and the result
-      #   will be to always deny access if a listed asscoiation is nil:
-      #     if_permitted_to :read, :home_branch, :context => :branches
-      #     if_permitted_to :read, :branch => :main_company, :context => :companies, :deny_on_nil => :branch
-      def if_permitted_to (privilege, attr_or_hash, options = {})
+      def if_permitted_to (privilege, attr_or_hash = nil, options = {})
         raise DSLError, "if_permitted_to only in has_permission blocks" if @current_rule.nil?
-        if attr_or_hash.is_a?(Hash)
-          options[:context] ||= attr_or_hash.delete(:context) 
-          options[:deny_on_nil] ||= attr_or_hash.delete(:deny_on_nil) 
-        end
+        options[:context] ||= attr_or_hash.delete(:context) if attr_or_hash.is_a?(Hash)
+        # only :context option in attr_or_hash:
+        attr_or_hash = nil if attr_or_hash.is_a?(Hash) and attr_or_hash.empty?
         @current_rule.append_attribute AttributeWithPermission.new(privilege,
-            attr_or_hash, options)
+            attr_or_hash, options[:context])
       end
+
       
       # In an if_attribute statement, is says that the value has to be
       # met exactly by the if_attribute attribute.  For information on the block
