@@ -47,7 +47,11 @@ end
 class TestAttr < ActiveRecord::Base
   belongs_to :test_model
   belongs_to :test_another_model, :class_name => "TestModel", :foreign_key => :test_another_model_id
+  belongs_to :test_a_third_model, :class_name => "TestModel", :foreign_key => :test_a_third_model_id
   belongs_to :n_way_join_item
+  belongs_to :test_attr
+  belongs_to :branch
+  belongs_to :company
   has_many :test_attr_throughs
   attr_reader :role_symbols
   def initialize (*args)
@@ -69,6 +73,20 @@ class TestModelSecurityModelWithFind < ActiveRecord::Base
   has_many :test_attrs
   using_access_control :include_read => true, 
     :context => :test_model_security_models
+end
+
+class Branch < ActiveRecord::Base
+  has_many :test_attrs
+  belongs_to :company
+end
+class Company < ActiveRecord::Base
+  has_many :test_attrs
+  has_many :branches
+  belongs_to :country
+end
+class Country < ActiveRecord::Base
+  has_many :test_models
+  has_many :companies
 end
 
 class ModelTest < Test::Unit::TestCase
@@ -389,6 +407,33 @@ class ModelTest < Test::Unit::TestCase
     TestAttr.delete_all
   end
   
+  def test_named_scope_with_anded_rules
+    reader = Authorization::Reader::DSLReader.new
+    reader.parse %{
+      authorization do
+        role :test_role do
+          has_permission_on :test_attrs, :to => :read, :join_by => :and do
+            if_attribute :test_model => is { user.test_model }
+            if_attribute :attr => 1
+          end
+        end
+      end
+    }
+    Authorization::Engine.instance(reader)
+    
+    test_model_1 = TestModel.create!
+    test_model_1.test_attrs.create!(:attr => 1)
+    TestModel.create!.test_attrs.create!(:attr => 1)
+    TestModel.create!.test_attrs.create!
+    
+    user = MockUser.new(:test_role, :test_model => test_model_1)
+    assert_equal 1, TestAttr.with_permissions_to(:read, 
+      :context => :test_attrs, :user => user).length
+    
+    TestModel.delete_all
+    TestAttr.delete_all
+  end
+  
   def test_named_scope_with_contains
     reader = Authorization::Reader::DSLReader.new
     reader.parse %{
@@ -567,6 +612,38 @@ class ModelTest < Test::Unit::TestCase
       TestAttrThrough.delete_all
       TestAttr.delete_all
     end
+  end
+
+  def test_named_scope_with_intersects_with
+    reader = Authorization::Reader::DSLReader.new
+    reader.parse %{
+      authorization do
+        role :test_role do
+          has_permission_on :test_models, :to => :read do
+            if_attribute :test_attrs => intersects_with { user.test_attrs }
+          end
+        end
+      end
+    }
+    Authorization::Engine.instance(reader)
+
+    test_model_1 = TestModel.create!
+    test_model_2 = TestModel.create!
+    test_model_1.test_attrs.create!
+    test_model_1.test_attrs.create!
+    test_model_1.test_attrs.create!
+    test_model_2.test_attrs.create!
+
+    user = MockUser.new(:test_role,
+                        :test_attrs => [test_model_1.test_attrs.first, TestAttr.create!])
+    assert_equal 1, TestModel.with_permissions_to(:read, :user => user).length
+
+    user = MockUser.new(:test_role,
+                        :test_attrs => [TestAttr.create!])
+    assert_equal 0, TestModel.with_permissions_to(:read, :user => user).length
+
+    TestModel.delete_all
+    TestAttr.delete_all
   end
   
   def test_named_scope_with_is_and_has_one
@@ -989,6 +1066,77 @@ class ModelTest < Test::Unit::TestCase
 
     user = MockUser.new(:test_role)
     assert_equal 1, TestAttr.with_permissions_to(:read, :user => user).length
+    TestModel.delete_all
+    TestAttr.delete_all
+  end
+
+  def test_named_scope_with_ored_rules_and_reoccuring_tables
+    reader = Authorization::Reader::DSLReader.new
+    reader.parse %{
+      authorization do
+        role :test_role do
+          has_permission_on :test_attrs, :to => :read do
+            if_attribute :test_another_model => { :content => 'test_1_2' },
+                :test_model => { :content => 'test_1_1' }
+          end
+          has_permission_on :test_attrs, :to => :read do
+            if_attribute :test_another_model => { :content => 'test_2_2' },
+                :test_model => { :test_attrs => contains {user.test_attr} }
+          end
+        end
+      end
+    }
+    Authorization::Engine.instance(reader)
+
+    test_attr_1 = TestAttr.create!(
+        :test_model => TestModel.create!(:content => 'test_1_1'),
+        :test_another_model => TestModel.create!(:content => 'test_1_2')
+      )
+    test_attr_2 = TestAttr.create!(
+        :test_model => TestModel.create!(:content => 'test_2_1'),
+        :test_another_model => TestModel.create!(:content => 'test_2_2')
+      )
+    test_attr_2.test_model.test_attrs.create!
+
+    user = MockUser.new(:test_role, :test_attr => test_attr_2.test_model.test_attrs.last)
+    assert_equal 2, TestAttr.with_permissions_to(:read, :user => user).length
+    TestModel.delete_all
+    TestAttr.delete_all
+  end
+
+  def test_named_scope_with_many_ored_rules_and_reoccuring_tables
+    reader = Authorization::Reader::DSLReader.new
+    reader.parse %{
+      authorization do
+        role :test_role do
+          has_permission_on :test_attrs, :to => :read do
+            if_attribute :branch => { :company => { :country => { 
+                :test_models => contains { user.test_model } 
+              }} }
+            if_attribute :company => { :country => {
+                :test_models => contains { user.test_model }
+              }}
+          end
+        end
+      end
+    }
+    Authorization::Engine.instance(reader)
+
+    country = Country.create!(:name => 'country_1')
+    country.test_models.create!
+    test_attr_1 = TestAttr.create!(
+        :branch => Branch.create!(:name => 'branch_1',
+            :company => Company.create!(:name => 'company_1',
+                :country => country))
+      )
+    test_attr_2 = TestAttr.create!(
+        :company => Company.create!(:name => 'company_2',
+            :country => country)
+      )
+
+    user = MockUser.new(:test_role, :test_model => country.test_models.first)
+
+    assert_equal 2, TestAttr.with_permissions_to(:read, :user => user).length
     TestModel.delete_all
     TestAttr.delete_all
   end
